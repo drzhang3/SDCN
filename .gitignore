@@ -78,3 +78,5 @@ fabric.properties
 .idea/modules.xml
 .idea/vcs.xml
 venv/
+.DS_Store
+__pycache__/

@@ -66,7 +66,7 @@ class SDCN(nn.Module):
             n_dec_3=n_dec_3,
             n_input=n_input,
             n_z=n_z)
-        self.ae.load_state_dict(torch.load(args.pretrain_path))
+        self.ae.load_state_dict(torch.load(args.pretrain_path, map_location=torch.device('cpu')))
 
         # GCN for inter information
         self.gnn_1 = GNNLayer(n_input, n_enc_1)
@@ -85,6 +85,7 @@ class SDCN(nn.Module):
     def forward(self, x, adj):
         # DNN Module
         x_bar, tra1, tra2, tra3, z = self.ae(x)
+        # z [samples, n_z=10]
 
         # GCN Module
         h = self.gnn_1(x, adj)
@@ -92,13 +93,14 @@ class SDCN(nn.Module):
         h = self.gnn_3(h+tra2, adj)
         h = self.gnn_4(h+tra3, adj)
         h = self.gnn_5(h+z, adj, active=False)
+        # [samples, n_clusters]
         predict = F.softmax(h, dim=1)
 
         # Dual Self-supervised Module
         q = 1.0 / (1.0 + torch.sum(torch.pow(z.unsqueeze(1) - self.cluster_layer, 2), 2) / self.v)
         q = q.pow((self.v + 1.0) / 2.0)
         q = (q.t() / torch.sum(q, 1)).t()
-
+        # [samples, n_clusters]
         return x_bar, q, predict, z
 
 
@@ -119,7 +121,7 @@ def train_idec(dataset):
 
     # KNN Graph
     adj = load_graph(args.name, args.k)
-    adj = adj.cuda()
+    # adj = adj.cuda()
 
     # cluster parameter initiate
     data = torch.Tensor(dataset.x).to(device)
@@ -129,10 +131,13 @@ def train_idec(dataset):
 
     kmeans = KMeans(n_clusters=args.n_clusters, n_init=20)
     y_pred = kmeans.fit_predict(z.data.cpu().numpy())
-    y_pred_last = y_pred
     model.cluster_layer.data = torch.tensor(kmeans.cluster_centers_).to(device)
+    # [n_clusters, n_z]
     eva(y, y_pred, 'pae')
 
+    q_f = []
+    p_f = []
+    z_f = []
     for epoch in range(200):
         if epoch % 1 == 0:
         # update_interval
@@ -143,9 +148,13 @@ def train_idec(dataset):
             res1 = tmp_q.cpu().numpy().argmax(1)       #Q
             res2 = pred.data.cpu().numpy().argmax(1)   #Z
             res3 = p.data.cpu().numpy().argmax(1)      #P
-            eva(y, res1, str(epoch) + 'Q')
-            eva(y, res2, str(epoch) + 'Z')
-            eva(y, res3, str(epoch) + 'P')
+            q_f1 = eva(y, res1, str(epoch) + 'Q')
+            z_f1 = eva(y, res2, str(epoch) + 'Z')
+            p_f1 = eva(y, res3, str(epoch) + 'P')
+            q_f.append(q_f1)
+            z_f.append(z_f1)
+            p_f.append(p_f1)
+
 
         x_bar, q, pred, _ = model(data, adj)
 
@@ -158,6 +167,14 @@ def train_idec(dataset):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+
+    import matplotlib.pyplot as plt
+    plt.plot(q_f,label='q')
+    plt.plot(z_f,label='z')
+    plt.plot(p_f,label='p')
+    plt.legend()
+    plt.show()
+    plt.savefig('usps.jpg')
 
 
 if __name__ == "__main__":
@@ -207,7 +224,6 @@ if __name__ == "__main__":
         args.k = None
         args.n_clusters = 6
         args.n_input = 3703
-
 
     print(args)
     train_idec(dataset)
